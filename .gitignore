@@ -3,3 +3,4 @@
 mininq.db
 mininq.db-shm
 mininq.db-wal
+*.pyc

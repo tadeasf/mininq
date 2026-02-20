@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>mininq dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+</head>
+<body>
+    <div class="header">
+        <h1>mininq</h1>
+        <span class="version" id="version-info">loading...</span>
+    </div>
+
+    <div class="stats-grid" id="stats-grid"></div>
+
+    <div class="section">
+        <h2>Queues</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Status</th>
+                    <th>Concurrency</th>
+                    <th>Pending</th>
+                    <th>Running</th>
+                    <th>Completed</th>
+                    <th>Dead</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="queues-body"></tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Jobs</h2>
+        <div class="filters">
+            <select id="filter-status" onchange="refreshJobs()">
+                <option value="">All statuses</option>
+                <option value="pending">Pending</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="dead">Dead</option>
+            </select>
+            <select id="filter-queue" onchange="refreshJobs()">
+                <option value="">All queues</option>
+            </select>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Queue</th>
+                    <th>Status</th>
+                    <th>Priority</th>
+                    <th>Attempt</th>
+                    <th>Callback</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody id="jobs-body"></tbody>
+        </table>
+    </div>
+
+    <div class="section">
+        <h2>Schedules</h2>
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Queue</th>
+                    <th>Cron</th>
+                    <th>Callback</th>
+                    <th>Enabled</th>
+                    <th>Last Run</th>
+                    <th>Next Run</th>
+                </tr>
+            </thead>
+            <tbody id="schedules-body"></tbody>
+        </table>
+    </div>
+
+    <script>
+    function formatUptime(secs) {
+        const d = Math.floor(secs / 86400);
+        const h = Math.floor((secs % 86400) / 3600);
+        const m = Math.floor((secs % 3600) / 60);
+        if (d > 0) return d + 'd ' + h + 'h';
+        if (h > 0) return h + 'h ' + m + 'm';
+        return m + 'm ' + (secs % 60) + 's';
+    }
+
+    function statusBadge(status) {
+        return '<span class="badge badge-' + status + '">' + status + '</span>';
+    }
+
+    function shortId(id) {
+        return '<span class="mono" title="' + id + '">' + id.substring(0, 8) + '</span>';
+    }
+
+    function shortTime(t) {
+        if (!t) return '-';
+        return t.replace('T', ' ').substring(0, 19);
+    }
+
+    async function fetchJSON(url) {
+        const r = await fetch(url);
+        return r.json();
+    }
+
+    async function refreshMetrics() {
+        try {
+            const m = await fetchJSON('/metrics');
+            document.getElementById('version-info').textContent = 'v' + m.version + ' | up ' + formatUptime(m.uptime_secs);
+            document.getElementById('stats-grid').innerHTML =
+                '<div class="stat-card"><span class="value">' + m.jobs.total + '</span><span class="label">Total Jobs</span></div>' +
+                '<div class="stat-card"><span class="value" style="color:var(--accent-yellow)">' + m.jobs.pending + '</span><span class="label">Pending</span></div>' +
+                '<div class="stat-card"><span class="value" style="color:var(--accent-blue)">' + m.jobs.running + '</span><span class="label">Running</span></div>' +
+                '<div class="stat-card"><span class="value" style="color:var(--accent-green)">' + m.jobs.completed + '</span><span class="label">Completed</span></div>' +
+                '<div class="stat-card"><span class="value" style="color:var(--accent)">' + m.jobs.dead + '</span><span class="label">Dead</span></div>' +
+                '<div class="stat-card"><span class="value">' + m.queues.length + '</span><span class="label">Queues</span></div>' +
+                '<div class="stat-card"><span class="value">' + m.schedules.enabled + '/' + m.schedules.total + '</span><span class="label">Schedules</span></div>';
+        } catch(e) { console.error('metrics error:', e); }
+    }
+
+    async function refreshQueues() {
+        try {
+            const queues = await fetchJSON('/queues');
+            const sel = document.getElementById('filter-queue');
+            const cur = sel.value;
+            sel.innerHTML = '<option value="">All queues</option>';
+            queues.forEach(q => {
+                sel.innerHTML += '<option value="' + q.name + '"' + (q.name === cur ? ' selected' : '') + '>' + q.name + '</option>';
+            });
+            document.getElementById('queues-body').innerHTML = queues.map(q =>
+                '<tr>' +
+                '<td class="mono">' + q.name + '</td>' +
+                '<td>' + (q.paused ? '<span class="badge badge-paused">paused</span>' : '<span class="badge badge-active">active</span>') + '</td>' +
+                '<td>' + q.max_concurrency + '</td>' +
+                '<td>' + q.pending + '</td>' +
+                '<td>' + q.running + '</td>' +
+                '<td>' + q.completed + '</td>' +
+                '<td>' + q.dead + '</td>' +
+                '<td>' + (q.paused
+                    ? '<button onclick="queueAction(\'' + q.name + '\',\'resume\')">Resume</button>'
+                    : '<button onclick="queueAction(\'' + q.name + '\',\'pause\')">Pause</button>') +
+                '</td></tr>'
+            ).join('');
+        } catch(e) { console.error('queues error:', e); }
+    }
+
+    async function refreshJobs() {
+        try {
+            let url = '/jobs?limit=50';
+            const status = document.getElementById('filter-status').value;
+            const queue = document.getElementById('filter-queue').value;
+            if (status) url += '&status=' + status;
+            if (queue) url += '&queue=' + queue;
+            const jobs = await fetchJSON(url);
+            document.getElementById('jobs-body').innerHTML = jobs.map(j =>
+                '<tr>' +
+                '<td>' + shortId(j.id) + '</td>' +
+                '<td class="mono">' + j.queue_name + '</td>' +
+                '<td>' + statusBadge(j.status) + '</td>' +
+                '<td>' + j.priority + '</td>' +
+                '<td>' + j.attempt + '/' + j.max_retries + '</td>' +
+                '<td class="truncate" title="' + j.callback_url + '">' + j.callback_url + '</td>' +
+                '<td>' + shortTime(j.created_at) + '</td>' +
+                '</tr>'
+            ).join('');
+        } catch(e) { console.error('jobs error:', e); }
+    }
+
+    async function refreshSchedules() {
+        try {
+            const schedules = await fetchJSON('/schedules');
+            document.getElementById('schedules-body').innerHTML = schedules.map(s =>
+                '<tr>' +
+                '<td>' + shortId(s.id) + '</td>' +
+                '<td class="mono">' + s.queue_name + '</td>' +
+                '<td class="mono">' + s.cron_expression + '</td>' +
+                '<td class="truncate" title="' + s.callback_url + '">' + s.callback_url + '</td>' +
+                '<td>' + (s.enabled ? '<span class="badge badge-active">yes</span>' : '<span class="badge badge-paused">no</span>') + '</td>' +
+                '<td>' + shortTime(s.last_run_at) + '</td>' +
+                '<td>' + shortTime(s.next_run_at) + '</td>' +
+                '</tr>'
+            ).join('');
+        } catch(e) { console.error('schedules error:', e); }
+    }
+
+    async function queueAction(name, action) {
+        await fetch('/queues/' + encodeURIComponent(name) + '/' + action, { method: 'POST' });
+        refreshQueues();
+        refreshMetrics();
+    }
+
+    // Initial load
+    refreshMetrics();
+    refreshQueues();
+    refreshJobs();
+    refreshSchedules();
+
+    // Polling
+    setInterval(refreshMetrics, 10000);
+    setInterval(refreshQueues, 5000);
+    setInterval(refreshJobs, 5000);
+    setInterval(refreshSchedules, 15000);
+    </script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 
 SQLite-backed job runner — background jobs the way SQLite feels for databases.
 
-No Redis. No RabbitMQ. Just a single binary and a single file.
+*No Redis. No RabbitMQ. Just a single binary and a single file.*
 
 ## Features
 
